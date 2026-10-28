@@ -13,7 +13,7 @@ const encoder = new TextEncoder()
 
 async function isolatedBridge(configuration) {
   const home = await mkdtemp(join(tmpdir(), 'cursor-test-home-'))
-  const bridge = new CursorBridge(configuration, {
+  const bridge = new CursorBridge({ auth_mode: 'cli_login', ...configuration }, {
     launch(module, argumentsList, options) {
       return fork(module, argumentsList, { ...options,
         env: { ...options.env, HOME: home, USERPROFILE: home } })
@@ -62,13 +62,28 @@ test('configuration validates boundaries and environment excludes gateway secret
     NODE_OPTIONS: '--inspect', CURSOR_BRIDGE_FORCE: 'true', CURSOR_CONFIG_DIRS: '/accounts',
     CURSOR_API_KEY: 'inherited-key', CURSOR_API_ENDPOINT: 'http://untrusted',
   })
-  assert.equal(environment.HOME, '/login-home')
+  assert.equal(environment.HOME, undefined)
+  assert.equal(environment.LLMHUB_CURSOR_AUTH_MODE, 'api_key')
   assert.equal(environment.CURSOR_API_KEY, 'explicit-key')
   assert.equal(environment.CURSOR_BRIDGE_FORCE, 'false')
   assert.equal(environment.CURSOR_BRIDGE_USE_ACP, 'true')
   for (const key of ['DATABASE_URL', 'OPENAI_API_KEY', 'NODE_OPTIONS', 'CURSOR_CONFIG_DIRS', 'CURSOR_API_ENDPOINT']) {
     assert.equal(environment[key], undefined)
   }
+})
+
+test('authentication never implicitly falls back to the server login', () => {
+  assert.throws(() => parseConfiguration({}), /requires its own cursor_api_key/)
+  assert.throws(() => parseConfiguration({ cursor_api_key: '  ' }), /requires its own/)
+  assert.throws(() => parseConfiguration({ auth_mode: 'other' }), /auth_mode/)
+  assert.throws(() => parseConfiguration({ auth_mode: 'cli_login', cursor_api_key: 'key' }), /cannot be combined/)
+  const environment = workerEnvironment(parseConfiguration({ auth_mode: 'cli_login' }), 'secret', {
+    HOME: '/explicit-login', CURSOR_API_KEY: 'must-not-leak', CURSOR_AUTH_TOKEN: 'must-not-leak',
+  })
+  assert.equal(environment.HOME, '/explicit-login')
+  assert.equal(environment.CURSOR_API_KEY, undefined)
+  assert.equal(environment.CURSOR_AUTH_TOKEN, undefined)
+  assert.equal(environment.LLMHUB_CURSOR_AUTH_MODE, 'cli_login')
 })
 
 test('SSE supports split UTF-8, CRLF, multiline JSON, comments and missing space', async () => {
@@ -108,7 +123,7 @@ test('SSE cancellation releases and cancels upstream', async () => {
 
 test('bridge startup is single-flight and close is terminal', async () => {
   let starts = 0
-  const bridge = new CursorBridge({}, { launch: () => { starts++; return fakeWorker(12345) } })
+  const bridge = new CursorBridge({ auth_mode: 'cli_login' }, { launch: () => { starts++; return fakeWorker(12345) } })
   const [first, second] = await Promise.all([bridge.ensureReady(), bridge.ensureReady()])
   assert.equal(first, second)
   assert.equal(starts, 1)
@@ -118,14 +133,14 @@ test('bridge startup is single-flight and close is terminal', async () => {
 
 test('startup timeout terminates owned child', async () => {
   const child = fakeWorker()
-  const bridge = new CursorBridge({}, { launch: () => child, startupMilliseconds: 20 })
+  const bridge = new CursorBridge({ auth_mode: 'cli_login' }, { launch: () => child, startupMilliseconds: 20 })
   await assert.rejects(bridge.ensureReady(), /startup timed out/)
   await bridge.close()
   assert.equal(child.exitCode, 0)
 })
 
 test('close during startup rejects readiness rather than hanging', async () => {
-  const bridge = new CursorBridge({}, { launch: () => fakeWorker(12345, 30) })
+  const bridge = new CursorBridge({ auth_mode: 'cli_login' }, { launch: () => fakeWorker(12345, 30) })
   const ready = bridge.ensureReady()
   const rejected = assert.rejects(ready, /exited/)
   await bridge.close()
@@ -181,7 +196,7 @@ test('HTTP scope tokens differ across providers and cancellation closes the stre
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
-  const bridge = new CursorBridge({}, { launch: () => fakeWorker(server.address().port) })
+  const bridge = new CursorBridge({ auth_mode: 'cli_login' }, { launch: () => fakeWorker(server.address().port) })
   try {
     await bridge.requestJSON('/v1/models', 'one')
     await bridge.requestJSON('/v1/models', 'two')

@@ -2,6 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import plugin from '../index.mjs'
 
+function providerConfiguration(extra = {}) {
+  return { name: 'cursor-account', use_custom_models: true,
+    connection: { extra: { cursor_api_key: 'fixture-key', ...extra } },
+    models: [{ id: 'sonnet', display_name: 'Sonnet' }] }
+}
+
 function setup(configuration = {}) {
   let provider
   let change
@@ -10,17 +16,18 @@ function setup(configuration = {}) {
     registerProvider(definition) { provider = definition },
     onConfigChange(listener) { change = listener },
   })
-  const adapter = provider.createAdapter({ name: 'cursor-account', use_custom_models: true,
-    models: [{ id: 'sonnet', display_name: 'Sonnet' }] })
+  const adapter = provider.createAdapter(providerConfiguration())
   return { provider, adapter, change, cleanup }
 }
 
 const request = { model: 'cursor-account/sonnet', config: {}, messages: [{ role: 'user', content: 'hello' }] }
 
-test('setup registers a portable provider synchronously, without CLI startup', async () => {
+test('setup registers per-provider credentials synchronously, without CLI startup', async () => {
   const { provider, adapter, cleanup } = setup({ agent_binary: '/does/not/exist' })
   assert.equal(provider.id, 'cursor')
-  assert.deepEqual(provider.connectionSchema, [])
+  assert.deepEqual(provider.secretConnectionFields, ['extra.cursor_api_key'])
+  assert.deepEqual(provider.connectionSchema.map((field) => field.key),
+    ['auth_mode', 'cursor_api_key', 'enable_tools', 'timeout_seconds'])
   assert.equal(adapter.toProviderRequest(request).model, 'sonnet')
   assert.deepEqual(adapter.getModels(), [{ id: 'cursor-account/sonnet', provider: 'cursor-account',
     name: 'sonnet', display_name: 'Sonnet', capabilities: { streaming: true, tools: false, vision: false } }])
@@ -29,16 +36,19 @@ test('setup registers a portable provider synchronously, without CLI startup', a
   await assert.rejects(adapter.call({}), /disabled/)
 })
 
-test('tools require explicit opt-in and capability metadata updates with configuration', () => {
-  const { adapter, change, cleanup } = setup()
+test('tools are per-provider opt-in and old adapters cannot reuse replaced credentials', async () => {
+  const { provider, adapter, cleanup } = setup()
   const toolRequest = { ...request, tools: [{ name: 'lookup', description: 'lookup', parameters: {} }] }
   assert.throws(() => adapter.toProviderRequest(toolRequest), /experimental/)
-  change({ enable_tools: true })
-  assert.equal(adapter.toProviderRequest(toolRequest).tools[0].function.name, 'lookup')
-  assert.equal(adapter.getModels()[0].capabilities.tools, true)
-  assert.throws(() => change({ enable_tools: 'yes' }), /boolean/)
-  change({ enable_tools: false })
-  assert.throws(() => adapter.toProviderRequest(toolRequest), /experimental/)
+  const enabled = provider.createAdapter(providerConfiguration({ enable_tools: true }))
+  assert.equal(enabled.toProviderRequest(toolRequest).tools[0].function.name, 'lookup')
+  assert.equal(enabled.getModels()[0].capabilities.tools, true)
+  assert.throws(() => adapter.toProviderRequest(request), /configuration changed/)
+  await assert.rejects(adapter.call({}), /configuration changed/)
+  assert.throws(() => provider.createAdapter(providerConfiguration({ enable_tools: 'yes' })), /boolean/)
+  assert.equal(enabled.getModels()[0].capabilities.tools, true)
+  const other = provider.createAdapter({ ...providerConfiguration(), name: 'another-account' })
+  assert.equal(other.getModels()[0].capabilities.tools, false)
   cleanup()
 })
 
@@ -53,6 +63,22 @@ test('model selection never inherits another caller’s last model', () => {
   cleanup()
 })
 
-test('invalid plugin configuration fails before provider registration', () => {
-  assert.throws(() => setup({ bridge_port: -1 }), /bridge_port/)
+test('legacy nondefault global account settings require explicit migration', () => {
+  for (const configuration of [{ cursor_api_key: 'old-key' }, { bridge_port: 1234 },
+    { enable_tools: true }, { timeout_seconds: 60 }]) {
+    assert.throws(() => setup(configuration), /Migrate plugin-global/)
+  }
+  const { cleanup } = setup({ cursor_api_key: '', bridge_port: 0, enable_tools: false, timeout_seconds: 180 })
+  cleanup()
+})
+
+test('plugin path changes invalidate existing adapters, but invalid changes leave them usable', () => {
+  const { provider, adapter, change, cleanup } = setup()
+  assert.throws(() => change({ agent_binary: 7 }), /string/)
+  assert.equal(adapter.getModels().length, 1)
+  change({ agent_binary: '/new/agent' })
+  assert.throws(() => adapter.getModels(), /configuration changed/)
+  const replacement = provider.createAdapter(providerConfiguration())
+  assert.equal(replacement.getModels().length, 1)
+  cleanup()
 })

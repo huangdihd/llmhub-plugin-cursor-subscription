@@ -7,18 +7,26 @@ import test from 'node:test'
 import { CursorBridge } from '../lib/bridge.mjs'
 import { fromChatResponse } from '../lib/codec.mjs'
 
-async function fixture(timeoutSeconds = 8) {
+async function fixture(timeoutSeconds = 8, account = { auth_mode: 'cli_login' }) {
   const directory = await mkdtemp(join(tmpdir(), 'cursor-fixture-'))
   const executable = join(directory, 'agent.mjs')
   const log = join(directory, '.cursor-api-proxy/sessions.log')
+  // Fake source keychain: without key-mode HOME isolation upstream would link it.
+  await mkdir(join(directory, 'Library/Keychains'), { recursive: true })
   await mkdir(join(directory, '.cursor-api-proxy/accounts/poison'), { recursive: true })
   await writeFile(join(directory, '.cursor-api-proxy/accounts/poison/cli-config.json'),
     '{"authInfo":{"email":"fake@example.invalid"}}')
   await writeFile(log, 'unchanged\n')
   await writeFile(executable, `#!${process.execPath}
 import { createInterface } from 'node:readline'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 if (process.argv.includes('--list-models')) {
+  if (process.env.CURSOR_API_KEY && existsSync(join(process.env.HOME, 'Library/Keychains'))) {
+    process.exit(3)
+  }
   console.log('fixture - Fixture')
+  if (process.env.CURSOR_API_KEY) console.log(process.env.CURSOR_API_KEY + ' - Account fixture')
   process.exit(0)
 }
 const send = (value) => console.log(JSON.stringify({ jsonrpc: '2.0', ...value }))
@@ -34,7 +42,14 @@ lines.on('line', (line) => {
     console.error('SENTINEL_SECRET_DO_NOT_LOG')
     process.exit(2)
   }
-  const text = prompt.includes('hang-fixture') ? 'started' : '你好 fixture'
+  let text = '你好 fixture'
+  if (prompt.includes('hang-fixture')) text = 'started'
+  if (prompt.includes('inspect-fixture')) {
+    text = JSON.stringify({
+      apiKey: process.env.CURSOR_API_KEY, home: process.env.HOME,
+      keychainLinked: existsSync(join(process.env.HOME, 'Library/Keychains')),
+    })
+  }
   send({ method: 'session/update', params: { sessionId: 'fixture-session',
     update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } })
   if (prompt.includes('hang-fixture')) {
@@ -45,7 +60,7 @@ lines.on('line', (line) => {
   reply({ stopReason: 'end_turn' })
 })
 `, { mode: 0o700 })
-  const bridge = new CursorBridge({ agent_binary: executable, timeout_seconds: timeoutSeconds }, {
+  const bridge = new CursorBridge({ ...account, agent_binary: executable, timeout_seconds: timeoutSeconds }, {
     launch(module, argumentsList, options) {
       return fork(module, argumentsList, { ...options,
         env: { ...options.env, HOME: directory, USERPROFILE: directory } })
@@ -71,6 +86,40 @@ test('real worker and fake CLI complete model discovery, JSON and SSE without re
     assert.ok(text.includes('[DONE]'))
     assert.equal(await readFile(current.log, 'utf8'), 'unchanged\n')
   } finally { await current.cleanup() }
+})
+
+test('explicit CLI login retains its own source home for upstream authentication', { timeout: 10000 }, async () => {
+  const current = await fixture()
+  try {
+    const response = await current.bridge.requestJSON('/v1/chat/completions', 'fixture-provider', body('inspect-fixture'))
+    const environment = JSON.parse(fromChatResponse(response).content[0].text)
+    assert.equal(environment.apiKey, undefined)
+    if (process.platform === 'darwin') assert.equal(environment.keychainLinked, true)
+  } finally { await current.cleanup() }
+})
+
+test('key-auth workers get different empty homes and their own explicit credentials', { timeout: 10000 }, async () => {
+  const first = await fixture(8, { cursor_api_key: 'first-fixture-key' })
+  const second = await fixture(8, { cursor_api_key: 'second-fixture-key' })
+  try {
+    const catalogs = await Promise.all([first, second].map((current) =>
+      current.bridge.requestJSON('/v1/models', 'fixture-provider')))
+    assert.ok(catalogs[0].data.some((model) => model.id === 'first-fixture-key'))
+    assert.ok(!catalogs[0].data.some((model) => model.id === 'second-fixture-key'))
+    assert.ok(catalogs[1].data.some((model) => model.id === 'second-fixture-key'))
+    const responses = await Promise.all([first, second].map((current) =>
+      current.bridge.requestJSON('/v1/chat/completions', 'fixture-provider', body('inspect-fixture'))))
+    const [one, two] = responses.map((response) => JSON.parse(fromChatResponse(response).content[0].text))
+    assert.equal(one.apiKey, 'first-fixture-key')
+    assert.equal(two.apiKey, 'second-fixture-key')
+    assert.notEqual(one.home, first.directory)
+    assert.notEqual(two.home, second.directory)
+    assert.notEqual(one.home, two.home)
+    assert.equal(one.keychainLinked, false)
+    assert.equal(two.keychainLinked, false)
+    assert.equal(await readFile(first.log, 'utf8'), 'unchanged\n')
+    assert.equal(await readFile(second.log, 'utf8'), 'unchanged\n')
+  } finally { await Promise.all([first.cleanup(), second.cleanup()]) }
 })
 
 test('agent stderr never reaches persistent proxy log or public HTTP error', { timeout: 10000 }, async () => {

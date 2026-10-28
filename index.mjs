@@ -1,4 +1,4 @@
-import { CursorBridge, parseConfiguration } from './lib/bridge.mjs'
+import { ProviderAccounts, connectionSchema } from './lib/providers.mjs'
 import { toChatRequest, fromChatResponse, fromChatChunk } from './lib/codec.mjs'
 
 function modelInfo(providerName, model, toolsEnabled) {
@@ -13,54 +13,33 @@ function modelInfo(providerName, model, toolsEnabled) {
 
 export default {
   setup(api) {
-    let configuration = { ...api.config }
-    parseConfiguration(configuration)
-    let bridge
-    let disposed = false
-    let previousShutdown = Promise.resolve()
-    const catalog = new Map()
-
-    async function activeBridge() {
-      await previousShutdown
-      if (disposed) throw new Error('Cursor plugin is disabled')
-      bridge ??= new CursorBridge(configuration)
-      return bridge
-    }
-
-    function stopBridge() {
-      const previous = bridge
-      bridge = undefined
-      catalog.clear()
-      if (previous) previousShutdown = previous.close()
-    }
-
-    api.onConfigChange((nextConfiguration) => {
-      parseConfiguration(nextConfiguration)
-      configuration = { ...nextConfiguration }
-      stopBridge()
-    })
+    const accounts = new ProviderAccounts(api.config)
+    api.onConfigChange((configuration) => accounts.configure(configuration))
 
     async function fetchModels(provider) {
-      const current = await activeBridge()
+      const account = accounts.bind(provider, { discovery: true })
+      const current = await account.bridge()
       const response = await current.requestJSON('/v1/models', provider.name)
       if (!Array.isArray(response.data) || response.data.some((model) => typeof model.id !== 'string' || !model.id)) {
         throw new Error('Cursor returned an invalid model catalog')
       }
-      const models = response.data.map((model) => modelInfo(provider.name, model, configuration.enable_tools === true))
-      if (bridge === current) catalog.set(provider.name, models)
+      const models = response.data.map((model) => modelInfo(provider.name, model, account.toolsEnabled))
+      account.saveModels(models)
       return models
     }
 
     api.registerProvider({
       id: 'cursor',
       displayName: 'Cursor Subscription',
-      connectionSchema: [],
-      secretConnectionFields: [],
+      connectionSchema,
+      secretConnectionFields: ['extra.cursor_api_key'],
       fetchModels,
       createAdapter(provider) {
+        const account = accounts.bind(provider)
         return {
           name: provider.name,
           toProviderRequest(request) {
+            account.assertCurrent()
             const converted = toChatRequest(request, provider.name)
             if (!converted.model || converted.model.trim() === 'default') {
               throw new Error('Choose an explicit Cursor model; shared last-request model fallback is disabled')
@@ -70,17 +49,17 @@ export default {
             }
             const usesTools = converted.tools?.length || converted.messages.some((message) =>
               message.role === 'tool' || message.tool_calls?.length)
-            if (usesTools && configuration.enable_tools !== true) {
+            if (usesTools && !account.toolsEnabled) {
               throw new Error('Cursor tool support is experimental; enable enable_tools after verifying CLI ACP compatibility')
             }
             return converted
           },
           async call(request) {
-            return (await activeBridge()).requestJSON('/v1/chat/completions', provider.name,
+            return (await account.bridge()).requestJSON('/v1/chat/completions', provider.name,
               { ...request, stream: false })
           },
           async callStream(request) {
-            return (await activeBridge()).requestStream(provider.name, request)
+            return (await account.bridge()).requestStream(provider.name, request)
           },
           fromProviderResponse: fromChatResponse,
           fromProviderStreamChunk: fromChatChunk,
@@ -88,10 +67,11 @@ export default {
             throw new Error('Cursor subscriptions do not support embeddings through this plugin')
           },
           getModels() {
+            account.assertCurrent()
             if (provider.use_custom_models) {
-              return (provider.models ?? []).map((model) => modelInfo(provider.name, model, configuration.enable_tools === true))
+              return (provider.models ?? []).map((model) => modelInfo(provider.name, model, account.toolsEnabled))
             }
-            return catalog.get(provider.name) ?? []
+            return account.models()
           },
         }
       },
@@ -99,9 +79,6 @@ export default {
 
     // LLMHub allows only ~1s for plugin cleanup. Initiate graceful child shutdown
     // synchronously; the child owns its bounded drain and parent-disconnect hook.
-    return () => {
-      disposed = true
-      stopBridge()
-    }
+    return () => { void accounts.close() }
   },
 }

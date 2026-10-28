@@ -2,14 +2,14 @@
 
 Experimental, independently packaged LLMHub provider using the official Cursor Agent CLI through `cursor-api-proxy@1.7.0`. This directory is a standalone project, **not** part of LLMHub's built-in providers or official `plugins/` tree.
 
-**Status:** offline protocol/lifecycle tests pass; real subscription inference, CLI authentication and ACP tool execution have not been end-to-end verified. Installing this package does not install Cursor CLI, authenticate an account, or guarantee that a plan includes API/Agent usage. Requests consume the signed-in Cursor account's applicable quota and may incur charges under its settings. Check Cursor's current terms and plan restrictions.
+**Status:** offline protocol/lifecycle tests pass. An authorized live text smoke test through the registered adapter and existing CLI login succeeded with `composer-2.5`, returning the requested `OK` in about 18.7 seconds. An earlier Haiku request returned a payment-method prompt; that third-party-model result does **not** mean the shared subscription pool is unavailable. Real per-account API-key inference, streaming and ACP tool execution remain unverified. Installing this package does not install Cursor CLI, authenticate an account, or guarantee that a plan includes API/Agent usage. Requests consume the signed-in Cursor account's applicable quota and may incur charges under its settings. Check Cursor's current terms and plan restrictions.
 
 ## Requirements
 
 - macOS or Linux with Node.js 18.2 or later (tested on macOS with Node 24). Windows is not supported by this release's process-group supervisor.
 - LLMHub **plugin API** `^1.5.0` (not the application's version number).
 - Official `cursor-agent`/`agent` executable on the **LLMHub server**, with ACP support. Containers need the CLI and authentication in the container, not just on the host.
-- Authenticate the CLI yourself, or configure an appropriate Cursor API key through the plugin's secret field. The plugin never extracts IDE tokens or changes account identifiers.
+- Configure a **separate Cursor user API key for each provider** (Cursor Dashboard → API Keys), or explicitly select the server's existing CLI login for one provider. The plugin never extracts IDE tokens or changes account identifiers. See [official CLI authentication](https://cursor.com/docs/cli/reference/authentication).
 
 ## Installation
 
@@ -29,7 +29,7 @@ LLMHub does **not** currently offer a `.tgz` upload endpoint. To install a local
 ```sh
 # Set these to the actual paths on the gateway machine.
 PLUGIN_DIRECTORY=/absolute/path/to/LLMHub/.data/plugins/cursor-subscription
-ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.1.0.tgz
+ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.2.0.tgz
 mkdir "$PLUGIN_DIRECTORY"  # existing directory: stop, do not overwrite it
 tar -xzf "$ARCHIVE" -C "$PLUGIN_DIRECTORY" --strip-components=1
 (cd "$PLUGIN_DIRECTORY" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
@@ -45,21 +45,37 @@ Use LLMHub's existing **Install GitHub** workflow with:
 
 `https://github.com/huangdihd/llmhub-plugin-cursor-subscription`
 
-The `v0.1.0` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.1.0`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.1.0 version` before using npm installation; GitHub and npm publication are independent.
+The `v0.2.0` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.2.0`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.2.0 version` before using npm installation; GitHub and npm publication are independent.
 
 Both installation paths still require plugin configuration and enablement. Installing does not authenticate Cursor or create a provider automatically.
 
-## Plugin configuration
+## Configuration: one account per provider
+
+**Changed in 0.2.0:** credentials and account settings are now per-provider. Version `0.1.0` used plugin-global credentials. Upgrading requires the migration below; existing credentials are never silently copied across provider records.
+
+The only plugin-global setting is `agent_binary` (empty: discover CLI on PATH). It may be an executable path, not a shell command.
+
+Configure these fields on **each Cursor Subscription provider**, stored in `connection.extra`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agent_binary` | empty | Discover CLI on PATH, or use an absolute executable path. Not a shell command. |
-| `cursor_api_key` | empty | Secret key; empty uses the existing CLI login. Inherited Cursor API-key environment variables are deliberately not used. |
-| `bridge_port` | `0` | OS-assigned private port. A fixed port must be free; existing services are never adopted or killed. |
-| `timeout_seconds` | `180` | Whole request deadline, including startup and response body; allowed range 1–3600. Also supplies upstream CLI/session timeout. |
-| `enable_tools` | `false` | Opt in to experimental ACP tool calls after verifying your CLI supports HTTP MCP. |
+| `auth_mode` | `api_key` | This provider's Cursor user API key, or explicitly `cli_login` for the server login. |
+| `cursor_api_key` | empty | Secret belonging to this account. Required in `api_key` mode; empty **never** falls back to local login. Must be empty in `cli_login` mode. |
+| `timeout_seconds` | `180` | Whole request deadline, including startup and response body; range 1–3600. Also supplies upstream CLI/session timeout. |
+| `enable_tools` | `false` | Opt in to experimental ACP tools after verifying CLI compatibility. |
 
-Credentials are plugin-global: all provider records use **one Cursor account**. This is not a multi-account pool. Configuration changes stop the old worker, cancel active requests and invalidate parked tool sessions. The replacement starts lazily after the old worker exits. Do not change configuration in the middle of a tool conversation.
+Each provider owns its credentials, lazy worker, automatic private port, catalog and tool sessions. Identical settings reuse that provider's worker; different providers never share workers. Changing an account's credentials/settings cancels only its worker and invalidates its old adapters and tool sessions. The replacement waits for shutdown before starting. Changing the global CLI executable stops all workers. Do not reconfigure during a tool conversation.
+
+`cli_login` is a limited, explicit single-account convenience, **not** a multi-account login/profile manager or an OAuth connection flow. The current plugin instance reserves it to one provider name. Changing the server's CLI login changes that provider's identity; never use this mode as an isolated multi-account credential store. LLMHub's public plugin API has no provider-removal callback: after deleting/renaming a provider, disable/re-enable the plugin to stop its unused worker and release any CLI-login reservation. This restriction is not coordinated across gateway instances or plugin restarts. Use per-account keys for multiple accounts.
+
+### Migration from 0.1.0
+
+1. Stop ongoing conversations and disable the plugin.
+2. Move the old global key and any nondefault tools/timeout settings to the intended provider's connection fields. Do not copy one key into unrelated account records. Alternatively explicitly select `cli_login` for one provider.
+3. Remove/reset old global `cursor_api_key`, `bridge_port`, `enable_tools` and `timeout_seconds` settings; nondefault legacy values cause an explicit migration error instead of being silently shared. Ports are now automatic.
+4. Enable the plugin and reload providers/model catalogs. Start new tool conversations; old pending sessions cannot be resumed.
+
+Inherited Cursor key/token environment variables are never used. Per-account key mode supplies an empty temporary home before loading upstream code, preventing its normal login-file discovery and macOS Keychain symlink fallback. This is configuration isolation, **not** an OS security boundary.
 
 ## Capabilities and explicit limits
 
@@ -76,14 +92,14 @@ Credentials are plugin-global: all provider records use **one Cursor account**. 
 
 Cancelling the adapter's returned stream aborts its HTTP request. Upstream ties response disconnection to CLI/ACP cancellation. Timeouts and plugin shutdown also abort requests. **LLMHub's public adapter API does not supply a request AbortSignal**, so an ingress disconnect only cancels upstream if the host actually cancels the returned stream; non-streaming requests rely on the deadline/shutdown. Already executed external tool side effects cannot be rolled back.
 
-The worker gives each provider name a different HMAC-derived bearer token and includes model identity in the upstream session owner, isolating tool sessions across provider records and models. A provider is **not a separate identity for every LLMHub API-key user**: the current request contract lacks that identity. Tool-call IDs are unguessable upstream capabilities, not a replacement for tenant authorization. For mutually untrusted tenants, use separate gateway/account deployments. Pending tool sessions expire under upstream TTL and are lost on restart; exactly-once execution across retries/restarts is not promised.
+Each provider has a separate worker, with its own random secret and HMAC-derived bearer token. Model identity is also included in the upstream session owner, isolating tool sessions across provider records and models. A provider is **not a separate identity for every LLMHub API-key user**: the current request contract lacks that identity. Tool-call IDs are unguessable upstream capabilities, not a replacement for tenant authorization. For mutually untrusted tenants, use separate gateway/account deployments. Pending tool sessions expire under upstream TTL and are lost on restart; exactly-once execution across retries/restarts is not promised.
 
 ### Security boundary
 
 - Child process with a restricted environment; gateway API/database secrets, `NODE_OPTIONS`, arbitrary Cursor endpoints, account pools and upstream overrides are not inherited.
 - Loopback-only HTTP, random per-worker secret, authenticated allowlisted model/chat routes, startup acknowledgement over IPC. The upstream web dashboard and other administrative routes are **not mounted**.
 - The CLI is launched against temporary workspaces, not the LLMHub repository. Upstream ACP rejects ordinary permission requests and permits its own external-tool bridge. `force`, automatic MCP approval, raw debug and verbose request logging are disabled. Child stdout/stderr are not forwarded or saved by the plugin; upstream's persistent session/error log is explicitly redirected to the null device. Account-directory autodiscovery is disabled.
-- This is **not an OS sandbox**. The child still runs as the gateway's OS user; upstream authentication can use that user's CLI login and on macOS links Keychain resources into temporary homes. Authentication and CLI dependencies remain trusted. Run the gateway/CLI in a separate container or OS account if filesystem containment is required.
+- This is **not an OS sandbox**. The child still runs as the gateway's OS user; explicit `cli_login` authentication can use that user's CLI login and on macOS links Keychain resources into temporary homes. In `api_key` mode the plugin does not expose that home or create those links; the CLI remains a trusted same-user process, not a sandboxed adversary. Authentication and CLI dependencies remain trusted. Run the gateway/CLI in a separate container or OS account if filesystem containment is required.
 - The worker supervises its own detached child groups, escalating TERM to KILL within a bounded grace period, independently of upstream's closed flags. All request temp roots live under the worker root. Shutdown initiates bounded asynchronous cleanup to respect LLMHub's short plugin cleanup deadline. A crash/SIGKILL can leave temporary directories or orphaned CLI processes; no guarantee of remote cancellation is made after an abrupt OS/process failure.
 
 ## Architecture and optimization notes
@@ -109,11 +125,20 @@ Reviewed [`iFwu/cursor2response` at `898ffd41`](https://github.com/iFwu/cursor2r
 
 ## Verification and troubleshooting
 
-`npm test` is offline: codec boundaries, mixed tool histories, unsupported options, incremental SSE, cancellation, deadlines, startup races, environment filtering and real worker authentication/port conflicts. Tests use local fixtures, not Cursor inference or account credentials.
+`npm test` is offline: codec boundaries, mixed tool histories, unsupported options, incremental SSE, cancellation, deadlines, startup races, environment filtering and real worker authentication/port conflicts. Tests use local fixtures, not Cursor inference or account credentials. They also cover separate provider keys/workers/catalogs, rotation and shutdown races, stale discovery, explicit CLI ownership, and empty homes without Keychain links in key mode.
 
-On `HTTP 4xx/5xx`, first verify CLI login, exact model ID, supported client options and ACP compatibility on the server. Detailed arbitrary HTTP/SSE error bodies are deliberately not echoed into gateway errors. For a startup port error, use port `0` or another free port. Tool-session errors after reconfiguration/restart require a new conversation, not blind replay of tool results.
+On `HTTP 4xx/5xx`, first verify CLI login, exact model ID, supported client options and ACP compatibility on the server. Detailed arbitrary HTTP/SSE error bodies are deliberately not echoed into gateway errors. Private ports are OS-assigned; startup failures should not be worked around by attaching to an existing service. Tool-session errors after reconfiguration/restart require a new conversation, not blind replay of tool results.
 
 Before production, run an explicitly authorized small live text/stream request and a tool round-trip/cancel test against the intended CLI version/account, then measure latency under a representative workload. No such paid/live test is included in the offline test suite.
+
+Local manual smoke results through the registered adapter using explicit `cli_login`: prompt `Reply only OK`, tools disabled, 30-second deadline, one non-streaming request per model:
+
+- `composer-2.5`: returned exactly `OK`, finish reason `stop`, in 18.7 seconds. This verifies a minimal live text inference path, not streaming, tools or per-account API-key authentication.
+- Earlier `claude-haiku-5-5-low`: returned `Add a payment method to continue` after about 18 seconds, wrapped as text with finish reason `stop`. This did not pass the smoke test and does not establish that shared subscription usage is unavailable.
+
+[Cursor's current pricing documentation](https://cursor.com/docs/models-and-pricing) says The X Subscription's included pool covers Grok 4.7/4.6/4.5 and Composer 2.5, including CLI usage. Third-party Claude, GPT and Gemini models are outside that pool and have separate payment requirements. Legacy Cursor plans have different rules; check the applicable plan instead of choosing a test model solely by its list price.
+
+The plugin does not reinterpret arbitrary assistant text as a billing error. There were no automatic retries/fallbacks or payment-setting changes. Actual token consumption, pool deductions and charges were not measured.
 
 ## License
 
