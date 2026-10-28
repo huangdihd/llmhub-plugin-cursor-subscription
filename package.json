@@ -1,6 +1,6 @@
 {
   "name": "llmhub-plugin-cursor-subscription",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Use a Cursor subscription as an LLMHub provider through the official Cursor Agent CLI.",
   "type": "module",
   "main": "index.mjs",
@@ -27,7 +27,11 @@
     "id": "cursor-subscription",
     "name": "Cursor Subscription",
     "configSchema": [
-      { "key": "agent_binary", "label": "Cursor CLI executable (empty: discover on PATH)", "type": "text", "default": "" }
+      { "key": "agent_binary", "label": "Cursor CLI executable (empty: discover on PATH)", "type": "text", "default": "" },
+      { "key": "cursor_api_key", "label": "Legacy global key (unused; configure each Provider instead)", "type": "secret" },
+      { "key": "bridge_port", "label": "Legacy bridge port (unused; ports are automatic)", "type": "number", "default": 0 },
+      { "key": "enable_tools", "label": "Legacy tools setting (unused; configure each Provider instead)", "type": "boolean", "default": false },
+      { "key": "timeout_seconds", "label": "Legacy timeout (unused; configure each Provider instead)", "type": "number", "default": 180 }
     ]
   }
 }

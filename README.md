@@ -29,7 +29,7 @@ LLMHub does **not** currently offer a `.tgz` upload endpoint. To install a local
 ```sh
 # Set these to the actual paths on the gateway machine.
 PLUGIN_DIRECTORY=/absolute/path/to/LLMHub/.data/plugins/cursor-subscription
-ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.2.0.tgz
+ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.2.1.tgz
 mkdir "$PLUGIN_DIRECTORY"  # existing directory: stop, do not overwrite it
 tar -xzf "$ARCHIVE" -C "$PLUGIN_DIRECTORY" --strip-components=1
 (cd "$PLUGIN_DIRECTORY" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
@@ -45,7 +45,7 @@ Use LLMHub's existing **Install GitHub** workflow with:
 
 `https://github.com/huangdihd/llmhub-plugin-cursor-subscription`
 
-The `v0.2.0` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.2.0`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.2.0 version` before using npm installation; GitHub and npm publication are independent.
+The `v0.2.1` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.2.1`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.2.1 version` before using npm installation; GitHub and npm publication are independent.
 
 Both installation paths still require plugin configuration and enablement. Installing does not authenticate Cursor or create a provider automatically.
 
@@ -53,7 +53,7 @@ Both installation paths still require plugin configuration and enablement. Insta
 
 **Changed in 0.2.0:** credentials and account settings are now per-provider. Version `0.1.0` used plugin-global credentials. Upgrading requires the migration below; existing credentials are never silently copied across provider records.
 
-The only plugin-global setting is `agent_binary` (empty: discover CLI on PATH). It may be an executable path, not a shell command.
+The only active plugin-global setting is `agent_binary` (empty: discover CLI on PATH). It may be an executable path, not a shell command. Version **0.2.1** also retains the four deprecated global fields in its schema so LLMHub can validate saved 0.1.0 configurations during an update. They are labelled unused, the old key remains secret-masked, and **none of them is used for requests or copied into providers**. Nondefault legacy settings produce a migration warning without blocking plugin activation.
 
 Configure these fields on **each Cursor Subscription provider**, stored in `connection.extra`:
 
@@ -70,10 +70,10 @@ Each provider owns its credentials, lazy worker, automatic private port, catalog
 
 ### Migration from 0.1.0
 
-1. Stop ongoing conversations and disable the plugin.
-2. Move the old global key and any nondefault tools/timeout settings to the intended provider's connection fields. Do not copy one key into unrelated account records. Alternatively explicitly select `cli_login` for one provider.
-3. Remove/reset old global `cursor_api_key`, `bridge_port`, `enable_tools` and `timeout_seconds` settings; nondefault legacy values cause an explicit migration error instead of being silently shared. Ports are now automatic.
-4. Enable the plugin and reload providers/model catalogs. Start new tool conversations; old pending sessions cannot be resumed.
+1. Stop ongoing conversations and update directly to **0.2.1 or later**. Version 0.2.0 removed legacy schema fields and could fail with `Unknown configuration field` even when only defaults were saved; 0.2.1 fixes that upgrade path. Do not uninstall or clear storage as a workaround.
+2. Configure the intended provider with its own key and tools/timeout settings. Do not copy one key into unrelated account records. Alternatively explicitly select `cli_login` for one provider using the server login.
+3. Old global values can stay stored: they are inactive and do not block updating. The plugin never prints or retrieves the old secret through its API. Re-enter the account's key yourself if needed. Ports are automatic.
+4. Enable the plugin if it was disabled, and reload providers/model catalogs. Unmigrated provider records fail explicitly instead of using the old global key. Start new tool conversations; old pending sessions cannot be resumed.
 
 Inherited Cursor key/token environment variables are never used. Per-account key mode supplies an empty temporary home before loading upstream code, preventing its normal login-file discovery and macOS Keychain symlink fallback. This is configuration isolation, **not** an OS security boundary.
 
@@ -128,6 +128,18 @@ Reviewed [`iFwu/cursor2response` at `898ffd41`](https://github.com/iFwu/cursor2r
 `npm test` is offline: codec boundaries, mixed tool histories, unsupported options, incremental SSE, cancellation, deadlines, startup races, environment filtering and real worker authentication/port conflicts. Tests use local fixtures, not Cursor inference or account credentials. They also cover separate provider keys/workers/catalogs, rotation and shutdown races, stale discovery, explicit CLI ownership, and empty homes without Keychain links in key mode.
 
 On `HTTP 4xx/5xx`, first verify CLI login, exact model ID, supported client options and ACP compatibility on the server. Detailed arbitrary HTTP/SSE error bodies are deliberately not echoed into gateway errors. Private ports are OS-assigned; startup failures should not be worked around by attaching to an existing service. Tool-session errors after reconfiguration/restart require a new conversation, not blind replay of tool results.
+
+### Host upgrade regression tests
+
+`integration/host-upgrade.test.mjs` exercises the real LLMHub `PluginManager.update` transaction with a local fake npm installer and in-memory storage: 0.1.0 defaults, 0.1.0 nondefault settings plus a fake secret, and 0.2.0. It confirms the old failure, successful activation after replacement, preservation/masking of stored values, and no implicit credential migration. It never reads real host configuration or starts the CLI.
+
+After compiling the host runtime as in LLMHub's `tests/run-all.sh`, run:
+
+```sh
+NODE_PATH=/absolute/path/to/LLMHub/node_modules \
+  LLMHUB_BUILD=/absolute/path/to/compiled-host/server \
+  node --test integration/host-upgrade.test.mjs
+```
 
 Before production, run an explicitly authorized small live text/stream request and a tool round-trip/cancel test against the intended CLI version/account, then measure latency under a representative workload. No such paid/live test is included in the offline test suite.
 

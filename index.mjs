@@ -14,7 +14,18 @@ function modelInfo(providerName, model, toolsEnabled) {
 export default {
   setup(api) {
     const accounts = new ProviderAccounts(api.config)
-    api.onConfigChange((configuration) => accounts.configure(configuration))
+    function warnLegacyConfiguration(configuration) {
+      const legacy = { cursor_api_key: '', bridge_port: 0, enable_tools: false, timeout_seconds: 180 }
+      if (Object.entries(legacy).some(([key, defaultValue]) =>
+        configuration[key] !== undefined && configuration[key] !== defaultValue)) {
+        api.logger?.warn('Legacy global Cursor account settings are retained but unused. Configure authentication, tools and timeout on each Provider; ports are automatic.')
+      }
+    }
+    warnLegacyConfiguration(api.config)
+    api.onConfigChange((configuration) => {
+      accounts.configure(configuration)
+      warnLegacyConfiguration(configuration)
+    })
 
     async function fetchModels(provider) {
       const account = accounts.bind(provider, { discovery: true })
