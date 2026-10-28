@@ -211,8 +211,11 @@ test('CLI login uses the official panel without HTTP, cookie, fabricated reset o
   assert.equal(result.windows[0].id, 'cli-included')
   assert.equal(result.windows[0].used_percent, 23)
   assert.equal(result.windows[0].reset_at, undefined)
-  assert.match(result.windows[0].detail, /Resets Nov 2/)
-  assert.match(result.windows[0].detail, /not a verified X/)
+  assert.equal(result.windows[0].detail, 'Resets Nov 2 (UTC)')
+  const withoutReset = await fetchSubscriptionUsage(current, { now: () => now,
+    cliUsage: async () => ({ plan: 'Premium', used_percent: 23 }),
+  })
+  assert.equal(withoutReset.windows[0].detail, undefined)
   await assert.rejects(fetchSubscriptionUsage(current, { timeoutMilliseconds: 20,
     cliUsage: () => new Promise(() => {}),
   }), /timed out/)

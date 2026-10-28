@@ -29,7 +29,7 @@ LLMHub does **not** currently offer a `.tgz` upload endpoint. To install a local
 ```sh
 # Set these to the actual paths on the gateway machine.
 PLUGIN_DIRECTORY=/absolute/path/to/LLMHub/.data/plugins/cursor-subscription
-ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.3.0.tgz
+ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.3.1.tgz
 mkdir "$PLUGIN_DIRECTORY"  # existing directory: stop, do not overwrite it
 tar -xzf "$ARCHIVE" -C "$PLUGIN_DIRECTORY" --strip-components=1
 (cd "$PLUGIN_DIRECTORY" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
@@ -45,7 +45,7 @@ Use LLMHub's existing **Install GitHub** workflow with:
 
 `https://github.com/huangdihd/llmhub-plugin-cursor-subscription`
 
-The `v0.3.0` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.3.0`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.3.0 version` before using npm installation; GitHub and npm publication are independent.
+The `v0.3.1` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.3.1`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.3.1 version` before using npm installation; GitHub and npm publication are independent.
 
 Both installation paths still require plugin configuration and enablement. Installing does not authenticate Cursor or create a provider automatically.
 
@@ -83,7 +83,7 @@ Inherited Cursor key/token environment variables are never used. Per-account key
 The registered provider implements LLMHub's `subscriptionUsage` callback. Authentication is **per provider**; it never estimates remaining subscription quota from character counts or missing counters. Queries do not send model prompts, retry inference, or change payment settings.
 
 - **`api_key`, no session cookie:** exchanges this provider's user API key at `https://api2.cursor.sh/auth/exchange_user_api_key`, then queries bearer-authenticated `aiserver.v1.DashboardService/GetSandUsageStatus`. A confirmed unified pool yields **X shared weekly quota**, reported used percentage and exact next reset. Access/refresh tokens are not persisted or logged. Non-unified/denied results fail explicitly, rather than using another account. Live server authorization for this path remains unverified.
-- **`cli_login`, no session cookie:** uses the official interactive **`/usage`** command in an empty worker workspace, through a system **`python3` standard-library PTY helper** (macOS/Linux). It verifies the registered Usage menu entry before submitting; missing commands fail without falling through to model inference. **Never use `agent -p /usage`, `agent usage`, or ACP `/usage` as a substitute:** in the verified CLI build those can become model prompts. This reports **CLI included plan**, rounded as displayed by Cursor. The current CLI queries `GetCurrentPeriodUsage`, not the unified-pool RPC, so this meter is **not claimed to be X shared weekly quota**. Its reset month/day is displayed as detail; no year, time or exact reset timestamp is invented. CLI UI changes, missing python3, unavailable login and unsupported enterprise panels fail explicitly.
+- **`cli_login`, no session cookie:** uses the official interactive **`/usage`** command in an empty worker workspace, through a system **`python3` standard-library PTY helper** (macOS/Linux). It verifies the registered Usage menu entry before submitting; missing commands fail without falling through to model inference. **Never use `agent -p /usage`, `agent usage`, or ACP `/usage` as a substitute:** in the verified CLI build those can become model prompts. This reports **CLI included plan**, rounded as displayed by Cursor. The current CLI queries `GetCurrentPeriodUsage`, not the unified-pool RPC, so this meter is **not claimed to be X shared weekly quota**. Its reset month/day is displayed as detail (e.g. `Resets Nov 2 (UTC)`); no year, time or exact reset timestamp is invented. Since 0.3.1, the panel contains no implementation or verification disclaimer. CLI UI changes, missing python3, unavailable login and unsupported enterprise panels fail explicitly.
 - **Explicit `cursor_session_token`:** queries Cursor's dashboard endpoints with that cookie, after comparing dashboard identity to this provider's official CLI `status --format json` identity. Mismatched accounts are rejected before usage queries. This supports confirmed X shared weekly quota and measurable legacy individual-plan quota. No browser storage, Keychain or CLI credential files are read by the plugin.
 
 To opt into dashboard queries, sign in to **the same account** at `https://cursor.com`, open browser developer tools → Application/Storage → Cookies → `cursor.com`, and copy only the value of **`WorkosCursorSessionToken`** into this provider's secret field. This is a login credential: **do not paste it into chat, logs or issue reports**. Do not copy a whole Cookie header. On session expiration, replace that provider's field. It is secret-masked by LLMHub and never passed to the inference worker.

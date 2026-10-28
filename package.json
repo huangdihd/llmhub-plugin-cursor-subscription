@@ -1,6 +1,6 @@
 {
   "name": "llmhub-plugin-cursor-subscription",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Use a Cursor subscription as an LLMHub provider through the official Cursor Agent CLI.",
   "type": "module",
   "main": "index.mjs",
