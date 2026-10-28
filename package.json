@@ -1,13 +1,13 @@
 {
   "name": "llmhub-plugin-cursor-subscription",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Use a Cursor subscription as an LLMHub provider through the official Cursor Agent CLI.",
   "type": "module",
   "main": "index.mjs",
   "files": ["index.mjs", "lib", "README.md", "LICENSE"],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check index.mjs && node --check lib/bridge.mjs && node --check lib/codec.mjs && node --check lib/worker.mjs && node --check lib/history.mjs && node --check lib/supervision.mjs && node --check lib/providers.mjs"
+    "check": "node --check index.mjs && node --check lib/bridge.mjs && node --check lib/codec.mjs && node --check lib/worker.mjs && node --check lib/history.mjs && node --check lib/supervision.mjs && node --check lib/providers.mjs && node --check lib/usage.mjs && node --check lib/identity.mjs && node --check lib/cli-usage.mjs"
   },
   "keywords": ["llmhub-plugin", "llmhub", "cursor", "cursor-agent", "provider"],
   "license": "MIT",

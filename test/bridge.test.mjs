@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, getEventListeners } from 'node:events'
 import { fork } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -175,6 +175,120 @@ test('occupied port fails without adopting or stopping the unrelated listener', 
     assert.equal(await response.text(), 'unrelated')
   } finally {
     await cleanup()
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('pre-aborted external requests never launch a worker or expose the abort reason', async () => {
+  let starts = 0
+  const bridge = new CursorBridge({ auth_mode: 'cli_login' }, {
+    launch() { starts++; return fakeWorker(12345) },
+  })
+  const controller = new AbortController()
+  controller.abort(new Error('ABORT_SECRET_SENTINEL'))
+  try {
+    await assert.rejects(bridge.requestJSON('/v1/account-identity', 'one', undefined, controller.signal),
+      { message: 'Cursor request cancelled' })
+    assert.equal(starts, 0)
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+  } finally { await bridge.close() }
+})
+
+test('external cancellation during startup releases only its request and preserves shared readiness', async () => {
+  const child = fakeWorker()
+  const bridge = new CursorBridge({ auth_mode: 'cli_login' }, { launch: () => child })
+  const controller = new AbortController()
+  try {
+    const pending = bridge.requestJSON('/v1/account-identity', 'one', undefined, controller.signal)
+    const rejected = assert.rejects(pending, { message: 'Cursor request cancelled' })
+    const ready = bridge.ensureReady()
+    controller.abort(new Error('ABORT_SECRET_SENTINEL'))
+    await rejected
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+    assert.equal(child.exitCode, null)
+    child.emit('message', { type: 'ready', port: 12345 })
+    assert.equal(await ready, 'http://127.0.0.1:12345')
+  } finally { await bridge.close() }
+})
+
+test('external abort closes pending headers and partial JSON without cancelling another request', { timeout: 10000 }, async (context) => {
+  for (const partialBody of [false, true]) {
+    await context.test(partialBody ? 'while reading JSON body' : 'while waiting for headers', async () => {
+      let received
+      let disconnected
+      const started = new Promise((resolve) => { received = resolve })
+      const closed = new Promise((resolve) => { disconnected = resolve })
+      const server = createServer((request, response) => {
+        if (request.url === '/v1/models') {
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end('{"data":[]}')
+          return
+        }
+        response.on('close', disconnected)
+        if (partialBody) {
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.write('{"email":"')
+        }
+        received()
+      })
+      server.listen(0, '127.0.0.1')
+      await once(server, 'listening')
+      const child = fakeWorker(server.address().port)
+      const bridge = new CursorBridge({ auth_mode: 'cli_login' }, { launch: () => child })
+      const controller = new AbortController()
+      try {
+        const pending = bridge.requestJSON('/v1/account-identity', 'one', undefined, controller.signal)
+        const rejected = assert.rejects(pending, (error) => {
+          assert.ok(error.name === 'AbortError' || error.message === 'Cursor request cancelled')
+          assert.ok(!error.message.includes('SECRET_SENTINEL'))
+          return true
+        })
+        await started
+        const concurrent = bridge.requestJSON('/v1/models', 'two')
+        controller.abort(new Error('ABORT_SECRET_SENTINEL'))
+        await rejected
+        await closed
+        assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+        assert.equal(child.exitCode, null)
+        assert.deepEqual(await concurrent, { data: [] })
+        assert.deepEqual(await bridge.requestJSON('/v1/models', 'one'), { data: [] })
+      } finally {
+        await bridge.close()
+        server.closeAllConnections()
+        await new Promise((resolve) => server.close(resolve))
+      }
+    })
+  }
+})
+
+test('external abort listeners are removed after success, HTTP failure and deadline', { timeout: 10000 }, async () => {
+  const server = createServer((request, response) => {
+    if (request.url === '/hang') return
+    response.writeHead(request.url === '/fail' ? 502 : 200, { 'content-type': 'application/json' })
+    response.end(request.url === '/fail' ? '{"error":"HTTP_SECRET_SENTINEL"}' : '{"data":[]}')
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const child = fakeWorker(server.address().port)
+  const bridge = new CursorBridge({ auth_mode: 'cli_login', timeout_seconds: 1 }, { launch: () => child })
+  try {
+    for (const path of ['/v1/models', '/fail', '/hang']) {
+      const controller = new AbortController()
+      const pending = bridge.requestJSON(path, 'one', undefined, controller.signal)
+      if (path === '/v1/models') assert.deepEqual(await pending, { data: [] })
+      else await assert.rejects(pending, (error) => {
+        assert.match(error.message, path === '/fail' ? /HTTP 502/ : /deadline exceeded/)
+        assert.ok(!error.message.includes('SECRET_SENTINEL'))
+        return true
+      })
+      assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+      controller.abort(new Error('LATE_ABORT_SECRET_SENTINEL'))
+      assert.equal(child.exitCode, null)
+    }
+    assert.deepEqual(await bridge.requestJSON('/v1/models', 'one'), { data: [] })
+  } finally {
+    await bridge.close()
+    server.closeAllConnections()
     await new Promise((resolve) => server.close(resolve))
   }
 })

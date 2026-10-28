@@ -1,5 +1,6 @@
 import { ProviderAccounts, connectionSchema } from './lib/providers.mjs'
 import { toChatRequest, fromChatResponse, fromChatChunk } from './lib/codec.mjs'
+import { fetchSubscriptionUsage } from './lib/usage.mjs'
 
 function modelInfo(providerName, model, toolsEnabled) {
   return {
@@ -43,8 +44,24 @@ export default {
       id: 'cursor',
       displayName: 'Cursor Subscription',
       connectionSchema,
-      secretConnectionFields: ['extra.cursor_api_key'],
+      secretConnectionFields: ['extra.cursor_api_key', 'extra.cursor_session_token'],
       fetchModels,
+      async subscriptionUsage(provider, fetcher) {
+        const account = accounts.bind(provider, { discovery: true })
+        return fetchSubscriptionUsage(provider, {
+          fetcher, assertCurrent: account.assertCurrent,
+          async cliUsage(signal) {
+            const bridge = await account.bridge()
+            try { return await bridge.requestJSON('/v1/subscription-usage', provider.name, undefined, signal) }
+            catch { throw new Error('Cannot read CLI /usage; check python3, CLI login and interactive /usage support on the server') }
+          },
+          async accountIdentity(signal) {
+            const bridge = await account.bridge()
+            try { return await bridge.requestJSON('/v1/account-identity', provider.name, undefined, signal) }
+            catch { throw new Error('Cannot verify Cursor account identity; check this Provider’s CLI login/API key and CLI version') }
+          },
+        })
+      },
       createAdapter(provider) {
         const account = accounts.bind(provider)
         return {

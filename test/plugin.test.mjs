@@ -28,15 +28,27 @@ const request = { model: 'cursor-account/sonnet', config: {}, messages: [{ role:
 test('setup registers per-provider credentials synchronously, without CLI startup', async () => {
   const { provider, adapter, cleanup } = setup({ agent_binary: '/does/not/exist' })
   assert.equal(provider.id, 'cursor')
-  assert.deepEqual(provider.secretConnectionFields, ['extra.cursor_api_key'])
+  assert.deepEqual(provider.secretConnectionFields, ['extra.cursor_api_key', 'extra.cursor_session_token'])
+  assert.equal(typeof provider.subscriptionUsage, 'function')
   assert.deepEqual(provider.connectionSchema.map((field) => field.key),
-    ['auth_mode', 'cursor_api_key', 'enable_tools', 'timeout_seconds'])
+    ['auth_mode', 'cursor_api_key', 'cursor_session_token', 'enable_tools', 'timeout_seconds'])
   assert.equal(adapter.toProviderRequest(request).model, 'sonnet')
   assert.deepEqual(adapter.getModels(), [{ id: 'cursor-account/sonnet', provider: 'cursor-account',
     name: 'sonnet', display_name: 'Sonnet', capabilities: { streaming: true, tools: false, vision: false } }])
   await assert.rejects(adapter.embed({}), /do not support embeddings/)
   assert.equal(cleanup(), undefined)
   await assert.rejects(adapter.call({}), /disabled/)
+})
+
+test('API-key quota callback works without CLI startup or a dashboard cookie', async () => {
+  const { provider, cleanup } = setup({ agent_binary: '/must/not/start' })
+  const result = await provider.subscriptionUsage(providerConfiguration(), async url => new Response(JSON.stringify(
+    url.endsWith('/auth/exchange_user_api_key') ? { accessToken: 'fixture-access' } : {
+      isUnified: true, includedLimitZero: false, usagePercent: 23,
+      nextResetTimestampUtc: new Date(Date.now() + 86400000).toISOString(),
+    }), { headers: { 'content-type': 'application/json' } }))
+  assert.equal(result.windows[0].used_percent, 23)
+  cleanup()
 })
 
 test('tools are per-provider opt-in and old adapters cannot reuse replaced credentials', async () => {

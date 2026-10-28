@@ -77,6 +77,18 @@ for (const scenario of [
       assert.equal(manager.getConfig('cursor-subscription').cursor_api_key, undefined)
       const definition = providerRegistry.get('cursor-subscription:cursor')
       assert.ok(definition)
+      assert.equal(typeof definition.subscriptionUsage, 'function')
+      assert.ok(definition.secretConnectionFields.includes('extra.cursor_session_token'))
+      assert.equal(definition.connectionSchema.find(field => field.key === 'cursor_session_token').type, 'secret')
+      const quotaProvider = { name: 'quota-account', connection: { extra: { cursor_api_key: 'fixture-only-key' } } }
+      definition.createAdapter(quotaProvider)
+      const usage = await definition.subscriptionUsage(quotaProvider, async url => new Response(JSON.stringify(
+        url.endsWith('/auth/exchange_user_api_key') ? { accessToken: 'fixture-only-token' } : {
+          isUnified: true, includedLimitZero: false, usagePercent: 23,
+          nextResetTimestampUtc: new Date(Date.now() + 86400000).toISOString(),
+        }), { headers: { 'content-type': 'application/json' } }))
+      assert.equal(usage.provider, 'quota-account')
+      assert.equal(usage.windows[0].used_percent, 23)
       assert.throws(() => definition.createAdapter({ name: 'unmigrated' }), /requires its own cursor_api_key/)
       const adapter = definition.createAdapter({ name: 'migrated', connection: { extra: {
         auth_mode: 'cli_login',

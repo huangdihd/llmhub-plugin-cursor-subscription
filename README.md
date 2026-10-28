@@ -29,7 +29,7 @@ LLMHub does **not** currently offer a `.tgz` upload endpoint. To install a local
 ```sh
 # Set these to the actual paths on the gateway machine.
 PLUGIN_DIRECTORY=/absolute/path/to/LLMHub/.data/plugins/cursor-subscription
-ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.2.1.tgz
+ARCHIVE=/absolute/path/to/llmhub-plugin-cursor-subscription-0.3.0.tgz
 mkdir "$PLUGIN_DIRECTORY"  # existing directory: stop, do not overwrite it
 tar -xzf "$ARCHIVE" -C "$PLUGIN_DIRECTORY" --strip-components=1
 (cd "$PLUGIN_DIRECTORY" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
@@ -45,7 +45,7 @@ Use LLMHub's existing **Install GitHub** workflow with:
 
 `https://github.com/huangdihd/llmhub-plugin-cursor-subscription`
 
-The `v0.2.1` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.2.1`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.2.1 version` before using npm installation; GitHub and npm publication are independent.
+The `v0.3.0` GitHub Release includes the `.tgz` archive for local installation. For **Install npm**, the package specification is `llmhub-plugin-cursor-subscription@0.3.0`. Check registry availability with `npm view llmhub-plugin-cursor-subscription@0.3.0 version` before using npm installation; GitHub and npm publication are independent.
 
 Both installation paths still require plugin configuration and enablement. Installing does not authenticate Cursor or create a provider automatically.
 
@@ -61,6 +61,7 @@ Configure these fields on **each Cursor Subscription provider**, stored in `conn
 |---|---|---|
 | `auth_mode` | `api_key` | This provider's Cursor user API key, or explicitly `cli_login` for the server login. |
 | `cursor_api_key` | empty | Secret belonging to this account. Required in `api_key` mode; empty **never** falls back to local login. Must be empty in `cli_login` mode. |
+| `cursor_session_token` | empty | Optional secret: same account’s `WorkosCursorSessionToken` cookie **value only**, for the dashboard quota route. Not needed for CLI `/usage` or API-key shared-pool queries. |
 | `timeout_seconds` | `180` | Whole request deadline, including startup and response body; range 1–3600. Also supplies upstream CLI/session timeout. |
 | `enable_tools` | `false` | Opt in to experimental ACP tools after verifying CLI compatibility. |
 
@@ -77,6 +78,22 @@ Each provider owns its credentials, lazy worker, automatic private port, catalog
 
 Inherited Cursor key/token environment variables are never used. Per-account key mode supplies an empty temporary home before loading upstream code, preventing its normal login-file discovery and macOS Keychain symlink fallback. This is configuration isolation, **not** an OS security boundary.
 
+## Subscription quota queries (0.3.0)
+
+The registered provider implements LLMHub's `subscriptionUsage` callback. Authentication is **per provider**; it never estimates remaining subscription quota from character counts or missing counters. Queries do not send model prompts, retry inference, or change payment settings.
+
+- **`api_key`, no session cookie:** exchanges this provider's user API key at `https://api2.cursor.sh/auth/exchange_user_api_key`, then queries bearer-authenticated `aiserver.v1.DashboardService/GetSandUsageStatus`. A confirmed unified pool yields **X shared weekly quota**, reported used percentage and exact next reset. Access/refresh tokens are not persisted or logged. Non-unified/denied results fail explicitly, rather than using another account. Live server authorization for this path remains unverified.
+- **`cli_login`, no session cookie:** uses the official interactive **`/usage`** command in an empty worker workspace, through a system **`python3` standard-library PTY helper** (macOS/Linux). It verifies the registered Usage menu entry before submitting; missing commands fail without falling through to model inference. **Never use `agent -p /usage`, `agent usage`, or ACP `/usage` as a substitute:** in the verified CLI build those can become model prompts. This reports **CLI included plan**, rounded as displayed by Cursor. The current CLI queries `GetCurrentPeriodUsage`, not the unified-pool RPC, so this meter is **not claimed to be X shared weekly quota**. Its reset month/day is displayed as detail; no year, time or exact reset timestamp is invented. CLI UI changes, missing python3, unavailable login and unsupported enterprise panels fail explicitly.
+- **Explicit `cursor_session_token`:** queries Cursor's dashboard endpoints with that cookie, after comparing dashboard identity to this provider's official CLI `status --format json` identity. Mismatched accounts are rejected before usage queries. This supports confirmed X shared weekly quota and measurable legacy individual-plan quota. No browser storage, Keychain or CLI credential files are read by the plugin.
+
+To opt into dashboard queries, sign in to **the same account** at `https://cursor.com`, open browser developer tools → Application/Storage → Cookies → `cursor.com`, and copy only the value of **`WorkosCursorSessionToken`** into this provider's secret field. This is a login credential: **do not paste it into chat, logs or issue reports**. Do not copy a whole Cookie header. On session expiration, replace that provider's field. It is secret-masked by LLMHub and never passed to the inference worker.
+
+Dashboard traffic is restricted to `https://cursor.com/api/auth/me`, `/api/usage-summary`, and `/api/dashboard/get-sand-usage-status`; API-key traffic is restricted to the two `api2.cursor.sh` endpoints above. Redirects are rejected. A whole-query deadline, bounded JSON bodies and generic errors prevent hanging requests or error-body credential disclosure. Missing/invalid quota data is an error, **not 0% used**. Trial expiry is not a recurring reset; extra spending caps, third-party model balances, teams and banked resets are not misrepresented as the shared pool.
+
+These are **internal first-party endpoints/UI, not a documented stable public quota API**. Protocol mapping was checked against the official CLI `2026.10.22-27dcf5f` and [CodexBar's Cursor implementation](https://github.com/steipete/CodexBar/tree/0538e94b464db0c12776e4bf6e7b11c66e44d275/Sources/CodexBarCore/Providers/Cursor). The installed CLI's interactive `/usage` was read successfully without inference; the registered plugin callback then returned Premium, 23% used and `Resets Nov 2` in 4.2 seconds through the real worker/PTY path. API-key exchange and explicit dashboard-cookie quota retrieval are covered by offline fixtures but have not been live-account verified.
+
+**Host cache limitation:** LLMHub caches usage for 60 seconds by provider name. After changing account credentials, use a forced usage refresh or wait for cache expiry; a normal cache hit may briefly show the previous account's snapshot without invoking the plugin. Plugin-level in-flight generation checks reject stale responses, but cannot invalidate a host cache hit. Changing the quota session also restarts only that provider's worker and invalidates old adapters.
+
 ## Capabilities and explicit limits
 
 - Text conversations, streaming, model discovery, and visible reasoning where the upstream path returns it (ordinary ACP chat paths may return text only).
@@ -85,7 +102,7 @@ Inherited Cursor key/token environment variables are never used. Per-account key
 - Images, embeddings, opaque/replayed thinking, structured JSON output, sampling controls (`temperature`, `topP`), `maxTokens`, stop sequences, logprobs and thinking budgets/summaries are explicitly rejected. Remove these client options rather than assuming the CLI obeys them.
 - Tool error flags are not silently converted to successful results. This version rejects unrepresentable `isError: true` blocks.
 - Provider-facing requests are limited to 8 MiB. No caller-controlled mode/workspace or built-in shell execution is exposed by the plugin interface.
-- **Token usage is unknown.** The pinned proxy estimates tokens from characters. The plugin discards that heuristic and returns zero as the current LLMHub contract's unknown placeholder, **not zero consumption**. Do not use these values for billing, token quotas or cost accounting. Subscription balance/usage reporting is not implemented.
+- **Token usage is unknown.** The pinned proxy estimates tokens from characters. The plugin discards that heuristic and returns zero as the current LLMHub contract's unknown placeholder, **not zero consumption**. Do not use these values for billing, token quotas or cost accounting. Subscription quota is queried separately; it is not inferred from these token placeholders (see above).
 - No ordinary cross-turn Agent cache. A tool exchange can continue its active ACP session, but complete user turns are not globally reused. Always send full conversation history.
 
 ### Cancellation and ownership
@@ -97,7 +114,7 @@ Each provider has a separate worker, with its own random secret and HMAC-derived
 ### Security boundary
 
 - Child process with a restricted environment; gateway API/database secrets, `NODE_OPTIONS`, arbitrary Cursor endpoints, account pools and upstream overrides are not inherited.
-- Loopback-only HTTP, random per-worker secret, authenticated allowlisted model/chat routes, startup acknowledgement over IPC. The upstream web dashboard and other administrative routes are **not mounted**.
+- Loopback-only HTTP, random per-worker secret, authenticated allowlisted model/chat and read-only identity/usage routes, startup acknowledgement over IPC. The upstream web dashboard and other administrative routes are **not mounted**.
 - The CLI is launched against temporary workspaces, not the LLMHub repository. Upstream ACP rejects ordinary permission requests and permits its own external-tool bridge. `force`, automatic MCP approval, raw debug and verbose request logging are disabled. Child stdout/stderr are not forwarded or saved by the plugin; upstream's persistent session/error log is explicitly redirected to the null device. Account-directory autodiscovery is disabled.
 - This is **not an OS sandbox**. The child still runs as the gateway's OS user; explicit `cli_login` authentication can use that user's CLI login and on macOS links Keychain resources into temporary homes. In `api_key` mode the plugin does not expose that home or create those links; the CLI remains a trusted same-user process, not a sandboxed adversary. Authentication and CLI dependencies remain trusted. Run the gateway/CLI in a separate container or OS account if filesystem containment is required.
 - The worker supervises its own detached child groups, escalating TERM to KILL within a bounded grace period, independently of upstream's closed flags. All request temp roots live under the worker root. Shutdown initiates bounded asynchronous cleanup to respect LLMHub's short plugin cleanup deadline. A crash/SIGKILL can leave temporary directories or orphaned CLI processes; no guarantee of remote cancellation is made after an abrupt OS/process failure.
@@ -131,7 +148,7 @@ On `HTTP 4xx/5xx`, first verify CLI login, exact model ID, supported client opti
 
 ### Host upgrade regression tests
 
-`integration/host-upgrade.test.mjs` exercises the real LLMHub `PluginManager.update` transaction with a local fake npm installer and in-memory storage: 0.1.0 defaults, 0.1.0 nondefault settings plus a fake secret, and 0.2.0. It confirms the old failure, successful activation after replacement, preservation/masking of stored values, and no implicit credential migration. It never reads real host configuration or starts the CLI.
+`integration/host-upgrade.test.mjs` exercises the real LLMHub `PluginManager.update` transaction with a local fake npm installer and in-memory storage: 0.1.0 defaults, 0.1.0 nondefault settings plus a fake secret, and 0.2.0. It confirms the old failure, successful activation after replacement, preservation/masking of stored values, no implicit credential migration, quota callback/secret registration, and a fixture shared-quota query through the host registry. It never reads real host configuration or starts the CLI.
 
 After compiling the host runtime as in LLMHub's `tests/run-all.sh`, run:
 

@@ -131,6 +131,57 @@ test('CLI ownership transfer waits for the previous provider’s worker to exit'
   await accounts.close()
 })
 
+test('quota session rotation invalidates only its provider and never enters worker configuration', async () => {
+  const { accounts, bridges } = fixture({ delayClose: true })
+  const initial = provider('first', { cursor_session_token: 'FIRST_SESSION_SECRET_SENTINEL' })
+  const changed = provider('first', { cursor_session_token: 'ROTATED_SESSION_SECRET_SENTINEL' })
+  const first = accounts.bind(initial)
+  const second = accounts.bind(provider('second', { cursor_session_token: 'SECOND_SESSION_SECRET_SENTINEL' }))
+  try {
+    const one = await first.bridge()
+    const two = await second.bridge()
+    first.saveModels(['old-catalog'])
+    second.saveModels(['unrelated-catalog'])
+    assert.equal(accounts.bind(initial), first)
+    assert.equal(accounts.bind(initial, { discovery: true }), first)
+    const rotated = accounts.bind(changed)
+    assert.notEqual(rotated, first)
+    assert.equal(one.closed, true)
+    assert.equal(two.closed, false)
+    assert.throws(() => first.assertCurrent(), /configuration changed/)
+    assert.throws(() => first.models(), /configuration changed/)
+    assert.throws(() => first.saveModels(['stale-catalog']), /configuration changed/)
+    await assert.rejects(first.bridge(), /configuration changed/)
+    assert.throws(() => accounts.bind(initial, { discovery: true }), /reload adapters/)
+    let started = false
+    const pending = rotated.bridge().then((bridge) => { started = true; return bridge })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(started, false)
+    assert.equal(bridges.length, 2)
+    one.finish()
+    const replacement = await pending
+    assert.deepEqual(replacement.configuration, one.configuration)
+    assert.deepEqual(rotated.models(), [])
+    assert.deepEqual(second.models(), ['unrelated-catalog'])
+    assert.equal(await second.bridge(), two)
+    assert.equal(accounts.bind(changed), rotated)
+
+    const removed = accounts.bind(provider('first'))
+    assert.equal(replacement.closed, true)
+    const withoutSession = removed.bridge()
+    replacement.finish()
+    await withoutSession
+    assert.equal(accounts.bind(provider('first', { cursor_session_token: '' })), removed)
+    for (const bridge of bridges) {
+      assert.equal(Object.hasOwn(bridge.configuration, 'cursor_session_token'), false)
+      assert.ok(!JSON.stringify(bridge.configuration).includes('SESSION_SECRET_SENTINEL'))
+    }
+  } finally {
+    for (const bridge of bridges) bridge.finish()
+    await accounts.close()
+  }
+})
+
 test('providers sharing a supplied key still never share a worker', async () => {
   const { accounts } = fixture()
   const first = accounts.bind(provider('first', { cursor_api_key: 'same-key' }))
